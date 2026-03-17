@@ -3,12 +3,9 @@
 #include "pico/multicore.h"
 #include "hardware/i2c.h"
 
-// Your driver / IMU functions
 #include "include/i2c_driver.h"
 #include "include/imu.h"
 
-// If these live in some imu.c, include its header instead.
-// For now, we just declare the function you wrote:
 float silicon_temperature(void);
 
 static void core1_blink_task(void) {
@@ -73,7 +70,7 @@ int main(void) {
         );
 
         gpio_put(LED_PIN, 0);
-        sleep_ms(250);
+        sleep_ms(50);
     }
     return 0;
 }
