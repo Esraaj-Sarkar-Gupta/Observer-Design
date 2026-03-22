@@ -13,7 +13,7 @@ import time
 import mahony_filter
 import matplotlib.pyplot as plt
 import json
-import os
+import os 
 
 SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 115200
@@ -30,11 +30,11 @@ estimator = mahony_filter.so3_filter(time_step=TIME_STEP,
                                      ki=0.0
                                      )
 
-gyro_roll_list = []
-acc_roll_list = []
-mahony_roll_list = []
-direct_roll_list = []
-passive_roll_list = []
+gyro_roll_list      = list([])
+acc_roll_list       = list([])
+mahony_roll_list    = list([])
+direct_roll_list    = list([])
+passive_roll_list   = list([])
 
 # ---- Systemic Bias Correction (Static) ---- #
 gyro_bias = np.zeros(3)
@@ -63,6 +63,7 @@ print(f"Static Calibration complete. \nGyro Bias: {gyro_bias} \nAccel Bias: {acc
 
 # ---- Magnetometer Calibration (Dynamic or Load) ---- #
 CAL_FILE = "mag_calibration.json"
+
 mag_bias = np.zeros(3)
 mag_scale = np.ones(3)
 
@@ -93,7 +94,7 @@ else:
             try:
                 raw_mag = np.array([float(x) for x in data[2].split(',')])
                 
-                # Align Magnetometer to Accel/Gyro ENU Frame (Flip Y and Z)
+                # Align Magnetometer to Accel/Gyro ENU Frame -- (Flip Y and Z)
                 aligned_mag = np.array([raw_mag[0], -raw_mag[1], -raw_mag[2]])
                 
                 mag_min = np.minimum(mag_min, aligned_mag)
@@ -104,7 +105,7 @@ else:
     mag_chord = (mag_max - mag_min) / 2.0
     mag_scale = np.mean(mag_chord) / mag_chord
 
-    # Save to file for next time
+    # Save to file for use in the rest of the framework
     with open(CAL_FILE, 'w') as f:
         json.dump({
             'mag_bias': mag_bias.tolist(),
@@ -116,7 +117,19 @@ else:
     print(f"Soft Iron Scale: {mag_scale}\n")
 
 
-print("Starting main data collection... Press Ctrl+C to stop and plot.")
+# ---- Pre-Collection Rest Phase ---- #
+print("Return the sensor to a resting position.")
+
+# I'm only human after all
+for i in range(5, 0, -1):
+    print(f"Starting data collection in {i} seconds...", end='\r')
+    time.sleep(1)
+
+print(f"\n\nStarting main data collection... Logging to {FILENAME}.")
+print("Press Ctrl+C to stop and plot.")
+
+# Open the CSV file for logging raw data
+log_file = open(FILENAME, 'w')
 
 # ---- Main Loop ---- #
 
@@ -126,6 +139,10 @@ try:
             raw_bytes = ser.readline()
             data_str = raw_bytes.decode('utf-8', errors='ignore').strip()
             if ';' not in data_str: continue
+            
+            # Log the raw data string to the CSV file
+            log_file.write(data_str + '\n')
+            
             data = data_str.split(';')
             
             try:
@@ -173,9 +190,12 @@ try:
                   f"{q_p[0]},{q_p[1]},{q_p[2]},{q_p[3]}")
             
 except KeyboardInterrupt:
+    # Safely close serial port. Save log file(s).
     ser.close()
+    log_file.close()
+    print(f"\nData collection stopped. Raw data saved to {FILENAME}.")
     
-    # Create a figure with 5 vertically stacked subplots that share the X-axis
+    # Create figures
     fig, axs = plt.subplots(5, 1, figsize=(10, 14), sharex=True)
     fig.suptitle('Roll Angle Comparison: 5 Estimators on SO(3)', fontsize=16)
 
@@ -210,6 +230,5 @@ except KeyboardInterrupt:
     axs[4].set_xlabel('Sample Iteration')
     axs[4].grid(True)
 
-    # Adjust layout to prevent overlapping labels
     plt.tight_layout(rect=[0, 0, 1, 0.97]) 
     plt.show()
