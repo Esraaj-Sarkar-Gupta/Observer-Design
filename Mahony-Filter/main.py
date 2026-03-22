@@ -29,7 +29,7 @@ ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
 
 estimator = mahony_filter.so3_filter(time_step=TIME_STEP,
                                      kp=1.0,
-                                     ki=0.0
+                                     ki=0.1
                                      )
 
 gyro_roll_list      = list([])
@@ -152,7 +152,7 @@ try:
             data = data_str.split(';')
             
             try:
-                gyroscope_data = np.array([float(x) for x in data[0].split(',')]) - gyro_bias
+                gyroscope_data = (np.array([float(x) for x in data[0].split(',')]) - gyro_bias) * (np.pi / 180.0) # Rads per Second
                 acc_data = np.array([float(x) for x in data[1].split(',')]) - acc_bias
                 
                 raw_mag = np.array([float(x) for x in data[2].split(',')])
@@ -189,11 +189,11 @@ try:
             q_p = estimator.get_quaternion(R_passive)
 
             # Pretty print
-            print(f"{q_g[0]},{q_g[1]},{q_g[2]},{q_g[3]},"
-                  f"{q_t[0]},{q_t[1]},{q_t[2]},{q_t[3]},"
-                  f"{q_e[0]},{q_e[1]},{q_e[2]},{q_e[3]},"
-                  f"{q_d[0]},{q_d[1]},{q_d[2]},{q_d[3]},"
-                  f"{q_p[0]},{q_p[1]},{q_p[2]},{q_p[3]}")
+            print(f"{q_g[0]:.3f},{q_g[1]:.3f},{q_g[2]:.3f},{q_g[3]:.3f},"
+                  f"{q_t[0]:.3f},{q_t[1]:.3f},{q_t[2]:.3f},{q_t[3]:.3f},"
+                  f"{q_e[0]:.3f},{q_e[1]:.3f},{q_e[2]:.3f},{q_e[3]:.3f},"
+                  f"{q_d[0]:.3f},{q_d[1]:.3f},{q_d[2]:.3f},{q_d[3]:.3f},"
+                  f"{q_p[0]:.3f},{q_p[1]:.3f},{q_p[2]:.3f},{q_p[3]:.3f}")
             
 except KeyboardInterrupt:
     # Safely close serial port. Save log file(s).
