@@ -38,7 +38,7 @@ class so3_filter:
         self.acc_input = np.zeros(3)
         self.mag_input = np.zeros(3)
 
-        # Time step (it's in the name, this comment is useless)
+        # Time step 
         self.time_step = time_step
 
         # Filter parameters
@@ -83,38 +83,21 @@ class so3_filter:
         """
         Rodrigues's rotation formula is an algorithm used for
         rotating a vector in space in SO(3). 
-
-        omega = raw input from gyroscope
-        dt    = time interval
-
-        We note that the axis of rotation is Omega = [wx, wy, wz].
-        Refer to Eueler's Rotation Theorem.
         """
-        
-        # Compute norm of gyroscope input
         omega_norm = np.linalg.norm(omega)
 
-        # If norm is too small, we return an indentity matrix
-        # Rationale : There is no rotation and thus rotation matrix is just the identity
         if omega_norm < 1e-6:
             return np.eye(3)
         
-        # Compute angle of rotation about the axis of rotation
         theta = omega_norm * dt
 
-        k = omega / omega_norm # This is how we define a k
+        k = omega / omega_norm
         k_skew = self._skew_symmetric(k)
 
-        # The bulk of the theory here
-        # Rodrigue's Rotation Formula
         R = np.eye(3) + np.sin(theta) * k_skew + (1.0 - np.cos(theta)) * (k_skew @ k_skew)
         return R
     
     # ---- Estimators -- TRIAD Algorithm ---- #
-    """
-    Tri-Axial Attitude Determination
-    """
-    
     def triad(
             self,
             acc_data : np.ndarray,  # Accelerometer Data
@@ -122,65 +105,36 @@ class so3_filter:
     ) -> np.ndarray :
         """
         Computes the direct rotation matrix using the TRIAD algorithm.
-        Here the accelerometer is used as the first vector.
         """
+        acc_norm = np.linalg.norm(acc_data)
+        mag_norm = np.linalg.norm(mag_data)
 
-        # Norms
-        acc_norm = np.linalg.norm(acc_data)     # Norm of accelerometer data
-        mag_norm = np.linalg.norm(mag_data)     # Norm of magnetometer data
-
-        # Check for rotation (if any)
         if (acc_norm < 1e-6) or (mag_norm < 1e-6):
             return np.eye(3)
         
-        # Unit Vectors
         v1 = acc_data / acc_norm
         v2 = mag_data / mag_norm
 
         # -- Body Frame Orthogonal Basis -- #
-        
-        # Define the first axis
-        # Assume the accelerometer to be the most reliable
         t1 = v1
-
-        # Define second axis
-        """
-        Orthogonal Sweep -- Compute the cross product of the gravity vector (t1)
-        and the "messy" magnetometer vector.
-        """
 
         _t2 = np.cross(t1, v2)
         t2 = _t2 / np.linalg.norm(_t2)
 
-        # Complete the orthogonal basis
-        # The cross product of the first two orthogonal axes give us the third one.
         t3 = np.cross(t1, t2)
 
         # -- Intertial Frame Orthogonal Basis -- #
-        # The "perfect" physics in the world frame.
-
-        # Gravity
         r1 = self.g_ref
 
-        # Second axis -- cross product of reference gravity and reference magnetic field (north)
         _r2 = np.cross(self.g_ref, self.m_ref)
         r2  = _r2 / np.linalg.norm(_r2)
         
         r3 = np.cross(r1, r2)
 
         # -- Build Orientation Matrices -- #
+        W_body = np.column_stack((t1, t2, t3))
+        W_intertial = np.column_stack((r1, r2, r3))
 
-        # Body Frame
-        W_body = np.column_stack(
-            (t1, t2, t3)
-        )
-
-        # Intertial Frame
-        W_intertial = np.column_stack(
-            (r1, r2, r3)
-        )
-
-        # Compute Rotation Matrix
         R = W_intertial @ W_body.T
 
         return R
@@ -195,7 +149,6 @@ class so3_filter:
     ) -> tuple:
         """
         Executes (i) Pure Gyro Integration and the (ii) Explicit Complementary Filter.
-
         Returns both rotation matrices to compare drift.
         """
 
@@ -204,7 +157,6 @@ class so3_filter:
         acc_norm = np.linalg.norm(acc_data)
         mag_norm = np.linalg.norm(mag_data)
 
-        # Initialize error vector
         error = np.zeros(3)
 
         if (acc_norm > 1e-6) and (mag_norm > 1e-6):
@@ -212,57 +164,37 @@ class so3_filter:
             Vm = mag_data / mag_norm
 
             # Map intertial references down to the estimated body frame
-            """
-            We know that R @ R.T = I
-
-            Using this property, we use the transpose of our current estimate
-            to pull the world-frame gravity and mangetic field references to
-            the body basis. 
-            """
             Va_hat = self.current_R_mahony.T @ self.g_ref
-            Vm_hat = self.current_R_mahony.T @ self.m_ref
+            
+            # -- Magnetic Dip Compensation -- #
+            # 1. Rotate the measured magnetic vector into the estimated Inertial Frame
+            h = self.current_R_mahony @ Vm
+            
+            # 2. Construct the true reference vector 'b', preserving the vertical dip
+            b = np.array([0.0, np.linalg.norm([h[0], h[1]]), h[2]])
+            
+            # 3. Pull this dynamically corrected reference back down to the body frame
+            Vm_hat = self.current_R_mahony.T @ b
 
             # -- Computing the error --#
-            """
-            In a perfect gyroscope, the estimate and physically true vectors
-            are expected to overlap. Any seperation presents itself as an angle
-            between the two vectors.
-
-            This cross product produces a vector orthogonal to both these vectors.
-            Rotation of the estimate along this axis aligns the estimate with the
-            physically true measurement. This enables the estimation of the direction
-            of the references with respect to the Mahony estimate.
-            """
-
             error = (
                 np.cross(Va, Va_hat) +  # Accelerometer error
                 np.cross(Vm, Vm_hat)    # Magnetometer error
             )
 
-            # -- PI Controller --#
-            # The controller used to correct for the error in the Mahony Filter
+        # -- PI Controller --#
+        self.gyro_bias_est += self.ki * error * self.time_step
+        omega_corrected = self.gyro_input + (self.kp * error) + self.gyro_bias_est
+    
+        # -- Integration using Rodrigues' Rotation Formula -- #
+        R_gyro_delta = self.rodrigues_formula(self.gyro_input, self.time_step)
+        R_mahony_delta = self.rodrigues_formula(omega_corrected, self.time_step)
 
-            # Integral term
-            self.gyro_bias_est += self.ki * error * self.time_step
+        # -- State Updates -- #
+        self.current_R_gyro = self.current_R_gyro @ R_gyro_delta
+        self.current_R_mahony = self.current_R_mahony @ R_mahony_delta
 
-            # Proportional term
-            omega_corrected = self.gyro_input + (self.kp * error) + self.gyro_bias_est
-        
-            # -- Integration using Rodrigues' Rotation Formula -- #
-            # Pure gyroscope -- visibly drifts over time
-
-            R_gyro_delta = self.rodrigues_formula(self.gyro_input, self.time_step)
-
-            # Fused Mahony Filter
-            R_mahony_delta = self.rodrigues_formula(omega_corrected, self.time_step)
-
-            # -- State Updates -- #
-            # The actual updates in this function
-
-            self.current_R_gyro = self.current_R_gyro @ R_gyro_delta
-            self.current_R_mahony = self.current_R_mahony @ R_mahony_delta
-
-            return self.current_R_gyro, self.current_R_mahony
+        return self.current_R_gyro, self.current_R_mahony
 
     # ---- Direct Complementary Filter ---- #
     def update_direct(self, gyro_data: np.ndarray, R_triad: np.ndarray) -> np.ndarray:
@@ -270,20 +202,13 @@ class so3_filter:
         Direct filter on SO(3). Uses the TRIAD matrix as the direct measurement.
         Error is computed in the Body frame.
         """
-        # Calculate the rotational difference matrix: R_estimate^T * R_measurement
         R_tilde = self.current_R_direct.T @ R_triad
-        
-        # Extract the skew-symmetric part of the difference matrix
         skew_err = 0.5 * (R_tilde - R_tilde.T)
-        
-        # Extract the 3D error vector
         error = self._vex(skew_err)
         
-        # PI Controller
         self.bias_direct += self.ki * error * self.time_step
         omega_corrected = gyro_data + (self.kp * error) + self.bias_direct
         
-        # Integrate
         R_delta = self.rodrigues_formula(omega_corrected, self.time_step)
         self.current_R_direct = self.current_R_direct @ R_delta
         
@@ -295,23 +220,15 @@ class so3_filter:
         Passive filter on SO(3). Similar to Direct, but computes the error 
         in the Inertial frame to guarantee passivity, then rotates it to the Body frame.
         """
-        # Calculate the rotational difference in the Inertial frame
         R_tilde_inertial = R_triad @ self.current_R_passive.T
-        
-        # Skew-symmetric part
         skew_err = 0.5 * (R_tilde_inertial - R_tilde_inertial.T)
-        
-        # Extract error vector in Inertial frame
         error_inertial = self._vex(skew_err)
         
-        # Rotate the error vector back into the Body frame so we can apply it to the gyro
         error_body = self.current_R_passive.T @ error_inertial
         
-        # PI Controller
         self.bias_passive += self.ki * error_body * self.time_step
         omega_corrected = gyro_data + (self.kp * error_body) + self.bias_passive
         
-        # Integrate
         R_delta = self.rodrigues_formula(omega_corrected, self.time_step)
         self.current_R_passive = self.current_R_passive @ R_delta
         
@@ -322,7 +239,6 @@ class so3_filter:
         """
         Extracts Roll, Pitch, and Yaw (in degrees) from a 3x3 Rotation Matrix.
         """
-        # Ensure the value for arcsin is clamped between -1 and 1 to prevent math domain errors
         pitch_val = np.clip(-R[2, 0], -1.0, 1.0)
         
         roll = np.degrees(np.arctan2(R[2, 1], R[2, 2]))
@@ -366,4 +282,4 @@ class so3_filter:
             qz = 0.25 * S
 
         q = np.array([qw, qx, qy, qz])
-        return q / np.linalg.norm(q) # Normalize to ensure strictly unit length
+        return q / np.linalg.norm(q)
