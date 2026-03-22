@@ -12,6 +12,8 @@ import numpy as np
 import time
 import mahony_filter
 import matplotlib.pyplot as plt
+import json
+import os
 
 SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 115200
@@ -59,41 +61,60 @@ gyro_bias = (gyro_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 0.0])
 acc_bias = (acc_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 9.80])
 print(f"Static Calibration complete. \nGyro Bias: {gyro_bias} \nAccel Bias: {acc_bias}")
 
-# ---- Magnetometer Calibration (Dynamic) ---- #
+# ---- Magnetometer Calibration (Dynamic or Load) ---- #
+CAL_FILE = "mag_calibration.json"
 mag_bias = np.zeros(3)
 mag_scale = np.ones(3)
 
-print(f"\nCalibrating Magnetometer... You have {MAG_CALIBRATION_TIME} seconds.")
-print("Pick up the sensor and wave it in a 3D Figure-8 pattern.")
-time.sleep(3)
-print("GO!")
+if os.path.exists(CAL_FILE):
+    print(f"\nFound existing calibration. Loading {CAL_FILE}...")
+    with open(CAL_FILE, 'r') as f:
+        cal_data = json.load(f)
+        mag_bias = np.array(cal_data['mag_bias'])
+        mag_scale = np.array(cal_data['mag_scale'])
+    print(f"Loaded Hard Iron Bias: {mag_bias}")
+    print(f"Loaded Soft Iron Scale: {mag_scale}\n")
+else:
+    print(f"\nCalibrating Magnetometer... You have {MAG_CALIBRATION_TIME} seconds.")
+    print("Pick up the sensor and wave it in a 3D Figure-8 pattern.")
+    time.sleep(3)
+    print("GO!")
 
-mag_min = np.array([float('inf'), float('inf'), float('inf')])
-mag_max = np.array([-float('inf'), -float('inf'), -float('inf')])
+    mag_min = np.array([float('inf'), float('inf'), float('inf')])
+    mag_max = np.array([-float('inf'), -float('inf'), -float('inf')])
 
+    start_time = time.time()
+    while (time.time() - start_time) < MAG_CALIBRATION_TIME:
+        if ser.in_waiting > 0:
+            raw_bytes = ser.readline()
+            data_str = raw_bytes.decode('utf-8', errors='ignore').strip()
+            if ';' not in data_str: continue
+            data = data_str.split(';')
+            try:
+                raw_mag = np.array([float(x) for x in data[2].split(',')])
+                
+                # Align Magnetometer to Accel/Gyro ENU Frame (Flip Y and Z)
+                aligned_mag = np.array([raw_mag[0], -raw_mag[1], -raw_mag[2]])
+                
+                mag_min = np.minimum(mag_min, aligned_mag)
+                mag_max = np.maximum(mag_max, aligned_mag)
+            except ValueError: continue
 
-start_time = time.time()
-while (time.time() - start_time) < MAG_CALIBRATION_TIME:
-    if ser.in_waiting > 0:
-        raw_bytes = ser.readline()
-        data_str = raw_bytes.decode('utf-8', errors='ignore').strip()
-        if ';' not in data_str: continue
-        data = data_str.split(';')
-        try:
-            raw_mag = np.array([float(x) for x in data[2].split(',')])
-            
-            # Align Magnetometer to Accel/Gyro ENU Frame (Flip Y and Z)
-            aligned_mag = np.array([raw_mag[0], -raw_mag[1], -raw_mag[2]])
-            
-            mag_min = np.minimum(mag_min, aligned_mag)
-            mag_max = np.maximum(mag_max, aligned_mag)
-        except ValueError: continue
+    mag_bias = (mag_max + mag_min) / 2.0
+    mag_chord = (mag_max - mag_min) / 2.0
+    mag_scale = np.mean(mag_chord) / mag_chord
 
-mag_bias = (mag_max + mag_min) / 2.0
-mag_chord = (mag_max - mag_min) / 2.0
-mag_scale = np.mean(mag_chord) / mag_chord
+    # Save to file for next time
+    with open(CAL_FILE, 'w') as f:
+        json.dump({
+            'mag_bias': mag_bias.tolist(),
+            'mag_scale': mag_scale.tolist()
+        }, f, indent=4)
 
-print(f"Mag Calibration complete. \nHard Iron Bias: {mag_bias} \nSoft Iron Scale: {mag_scale}\n")
+    print(f"Mag Calibration complete and saved to {CAL_FILE}.")
+    print(f"Hard Iron Bias: {mag_bias}")
+    print(f"Soft Iron Scale: {mag_scale}\n")
+
 
 print("Starting main data collection... Press Ctrl+C to stop and plot.")
 
@@ -117,7 +138,7 @@ try:
                 
             except ValueError: continue
 
-            # 1. Calculate all five Rotation Matrices
+            # Calculate all five Rotation Matrices
             R_triad = estimator.triad(acc_data, mag_data)
             R_gyro, R_explicit = estimator.update(gyroscope_data, acc_data, mag_data)
             R_direct = estimator.update_direct(gyroscope_data, R_triad)
