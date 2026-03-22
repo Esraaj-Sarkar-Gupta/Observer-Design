@@ -2,7 +2,8 @@
 Docstring for Mahony-Filter.main
 main.py
 
-Main data collection and execution script for the Mahony Filter
+Main data collection and execution script for the Mahony Filter.
+Includes bias correction and logging of sensor errors.
 
 Author: Esraaj Sarkar Gupta
 Date: 18th March, 2026
@@ -18,6 +19,7 @@ import os
 SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 115200
 FILENAME = "sensor_data_raw.csv"
+CAL_FILE = "sensor_calibration.json"
 TIME_STEP = 50 * 1e-3 # s
 
 CALLIBRATION_RUNS = 100.0
@@ -36,34 +38,9 @@ mahony_roll_list    = list([])
 direct_roll_list    = list([])
 passive_roll_list   = list([])
 
-# ---- Systemic Bias Correction (Static) ---- #
+# ---- Calibration Phase (Load or Execute) ---- #
 gyro_bias = np.zeros(3)
 acc_bias = np.zeros(3)
-
-print("Calibrating Gyro & Accel... Please keep the sensor perfectly flat and still.")
-valid_samples = 0
-gyro_sum = np.zeros(3)
-acc_sum = np.zeros(3)
-
-while valid_samples < CALLIBRATION_RUNS:
-    if ser.in_waiting > 0:
-        raw_bytes = ser.readline()
-        data_str = raw_bytes.decode('utf-8', errors='ignore').strip()
-        if ';' not in data_str: continue
-        data = data_str.split(';')
-        try:
-            gyro_sum += np.array([float(x) for x in data[0].split(',')])
-            acc_sum += np.array([float(x) for x in data[1].split(',')])
-            valid_samples += 1
-        except ValueError: continue
-
-gyro_bias = (gyro_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 0.0])
-acc_bias = (acc_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 9.80])
-print(f"Static Calibration complete. \nGyro Bias: {gyro_bias} \nAccel Bias: {acc_bias}")
-
-# ---- Magnetometer Calibration (Dynamic or Load) ---- #
-CAL_FILE = "mag_calibration.json"
-
 mag_bias = np.zeros(3)
 mag_scale = np.ones(3)
 
@@ -71,11 +48,39 @@ if os.path.exists(CAL_FILE):
     print(f"\nFound existing calibration. Loading {CAL_FILE}...")
     with open(CAL_FILE, 'r') as f:
         cal_data = json.load(f)
+        gyro_bias = np.array(cal_data['gyro_bias'])
+        acc_bias = np.array(cal_data['acc_bias'])
         mag_bias = np.array(cal_data['mag_bias'])
         mag_scale = np.array(cal_data['mag_scale'])
+        
+    print(f"Loaded Gyro Bias: {gyro_bias}")
+    print(f"Loaded Accel Bias: {acc_bias}")
     print(f"Loaded Hard Iron Bias: {mag_bias}")
     print(f"Loaded Soft Iron Scale: {mag_scale}\n")
 else:
+    # --Static Calibration (Steady State Error) -- #
+    print("Calibrating Gyro & Accel... Please keep the sensor perfectly flat and still.")
+    valid_samples = 0
+    gyro_sum = np.zeros(3)
+    acc_sum = np.zeros(3)
+
+    while valid_samples < CALLIBRATION_RUNS:
+        if ser.in_waiting > 0:
+            raw_bytes = ser.readline()
+            data_str = raw_bytes.decode('utf-8', errors='ignore').strip()
+            if ';' not in data_str: continue
+            data = data_str.split(';')
+            try:
+                gyro_sum += np.array([float(x) for x in data[0].split(',')])
+                acc_sum += np.array([float(x) for x in data[1].split(',')])
+                valid_samples += 1
+            except ValueError: continue
+
+    gyro_bias = (gyro_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 0.0])
+    acc_bias = (acc_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 9.80])
+    print(f"Static Calibration complete. \nGyro Bias: {gyro_bias} \nAccel Bias: {acc_bias}")
+
+    # -- Dynamic Calibration (Magnetometer) -- #
     print(f"\nCalibrating Magnetometer... You have {MAG_CALIBRATION_TIME} seconds.")
     print("Pick up the sensor and wave it in a 3D Figure-8 pattern.")
     time.sleep(3)
@@ -105,14 +110,16 @@ else:
     mag_chord = (mag_max - mag_min) / 2.0
     mag_scale = np.mean(mag_chord) / mag_chord
 
-    # Save to file for use in the rest of the framework
+    # -- Log all error corrections to JSON -- #
     with open(CAL_FILE, 'w') as f:
         json.dump({
+            'gyro_bias': gyro_bias.tolist(),
+            'acc_bias': acc_bias.tolist(),
             'mag_bias': mag_bias.tolist(),
             'mag_scale': mag_scale.tolist()
         }, f, indent=4)
 
-    print(f"Mag Calibration complete and saved to {CAL_FILE}.")
+    print(f"All Calibrations complete and saved to {CAL_FILE}.")
     print(f"Hard Iron Bias: {mag_bias}")
     print(f"Soft Iron Scale: {mag_scale}\n")
 
@@ -132,7 +139,6 @@ print("Press Ctrl+C to stop and plot.")
 log_file = open(FILENAME, 'w')
 
 # ---- Main Loop ---- #
-
 try:
     while True:
         if ser.in_waiting > 0:
