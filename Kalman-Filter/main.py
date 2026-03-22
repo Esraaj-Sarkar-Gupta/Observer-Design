@@ -1,9 +1,19 @@
+"""
+Main data collection and execution script for the Kalman Filter.
+
+This script reads raw IMU data (gyroscope and accelerometer) from a serial port,
+performs a static bias calibration, runs a Kalman filter to estimate the roll angle,
+logs the raw sensor data directly to a CSV file, and plots the comparative results.
+
+Author: Esraaj Sarkar Gupta
+Date: March 2026
+"""
 import serial
 import numpy as np
 import kalman_filter
 import matplotlib.pyplot as plt
 
-SERIAL_PORT = '/dev/ttyACM1'
+SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 115200
 FILENAME = "sensor_data_raw.csv"
 TIME_STEP = 50 * 1e-3 # s
@@ -17,16 +27,16 @@ estimator = kalman_filter.roll_angle(time_step=TIME_STEP,
                                      sigma_v=0.5
                                      )
 
-gyro_roll_list = []
-acc_roll_list = []
-kalman_roll_list = []
+gyro_roll_list      = list([])
+acc_roll_list       = list([])
+kalman_roll_list    = list([])
 
 # ---- Systemic Bias Correction ---- #
 gyro_bias = np.zeros(3)
 acc_bias = np.zeros(3)
 
 if CALLIBRATION_RUNS > 0:
-    print("Calibrating biases... Please keep the sensor perfectly flat and still.")
+    print("Calibrating biases... Keep the sensor perfectly flat and still.")
     valid_samples = 0
     gyro_sum = np.zeros(3)
     acc_sum = np.zeros(3)
@@ -45,9 +55,12 @@ if CALLIBRATION_RUNS > 0:
 
     gyro_bias = (gyro_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 0.0])
     acc_bias = (acc_sum / CALLIBRATION_RUNS) - np.array([0.0, 0.0, 9.80])
-    print(f"Calibration complete. Gyro Bias: {gyro_bias}")
+    print(f"Calibration complete. Gyro Bias: {gyro_bias}") # Meow
 
-print("Starting main data collection... Press Ctrl+C to stop and plot.")
+print(f"Starting main data collection. Logging raw data to {FILENAME}. Press Ctrl+C to stop and plot.")
+
+# Open log CSV file.
+log_file = open(FILENAME, 'w')
 
 # ---- Main Loop ---- #
 try:
@@ -56,6 +69,10 @@ try:
             raw_bytes = ser.readline()
             data_str = raw_bytes.decode('utf-8', errors='ignore').strip()
             if ';' not in data_str: continue
+            
+            # Write the raw IMU data string directly to the CSV log file.
+            log_file.write(data_str + '\n')
+            
             data = data_str.split(';')
             
             try:
@@ -72,7 +89,10 @@ try:
             kalman_roll_list.append(fused_roll)
 
 except KeyboardInterrupt:
+    # Gracefully kills data collection
     ser.close()
+    log_file.close()
+    print(f"\nData collection stopped. Raw data successfully saved to {FILENAME}.")
     
     plt.figure(figsize=(10, 6))
 
